@@ -262,6 +262,14 @@ class CustomScript:
             input_tag_data: ScriptInputTagData = self.last_data[tag_data.tagname]
 
             if tag_data.timestamp == input_tag_data.timestamp:
+                if tag_data.timestamp == -1:
+                    if not np.isnan(tag_data.value) and np.isnan(input_tag_data.value):
+                        input_tag_data.update(
+                            timestamp=tag_data.timestamp,
+                            value=tag_data.value,
+                            status_code=tag_data.status_code,
+                        )
+                        updated = True
                 continue
 
             input_tag_data.update(
@@ -391,9 +399,16 @@ class CustomScript:
         return df[df.Code != "None"]
     
     def update_result_output(self, script_data: dict):
-        max_timestamp = max([tag_data.timestamp for tag_data in script_data.values()])
+        # ensure timestamps are numeric before taking max
+        ts_list = []
+        for tag_data in script_data.values():
+            try:
+                ts_list.append(int(tag_data.timestamp))
+            except Exception:
+                continue
+        max_timestamp = max(ts_list) if ts_list else -1
         for output_tag in self._output_tags:
-            self.result_output[output_tag.tagname]["timestamp"] = max_timestamp
+            self.result_output[output_tag.tagname]["timestamp"] = int(max_timestamp)
             self.result_output[output_tag.tagname]["status_code"] = 192
             
     def calc(self, script_data: dict) -> any:
@@ -406,6 +421,14 @@ class CustomScript:
         Returns:
             any: 계산 결과.
         """
+        # env = dict(CustomScript.allowed_builtins) 
+        # env.update(self._initializeation_code_var or {})
+        # env["Value"] = script_data 
+
+        # exec(self.compiled_code, env, env)         
+        # self.update_result_output(script_data)
+        # return self.result_output
+        # 기존 코드 = glbal변수랑 local변수랑 구분이 안되서 함수안에서 Value가 안보임
         exec(
             self.compiled_code,
             CustomScript.allowed_builtins,
@@ -454,17 +477,45 @@ class CustomScriptManager(dict, metaclass=SingletonInstance):
         df_calc_script_setting_output = psql_connector.load_table_as_df(
             table="calc_tag_setting_output", index_col="output_tagname"
         )
+
         for script_id, row in df_calc_script_setting_input.iterrows():
             try:
                 output_tag_data = df_calc_script_setting_output[
                     df_calc_script_setting_output.script_id == script_id
                 ]
                 output_tags = []
+
                 for tagname, _data in output_tag_data.iterrows():
-                    _output_tag = _ScriptOutputTags(
-                        tagname=tagname, script=_data.output_tag_code
-                    )
-                    output_tags.append(_output_tag)
+                    try:
+                        output_tag = _ScriptOutputTags(
+                            tagname=tagname,
+                            script=_data.output_tag_code,
+                            display_tagname=_data.display_tagname,
+                            description=_data.get("description") or "",
+                            unit=_data.get("unit") or "",
+                            systemidx=_data.get("systemidx") if pd.notna(_data.get("systemidx")) else None,
+                            ai_rangelow=_data.get("ai_rangelow", -1000.0),
+                            ai_rangehigh=_data.get("ai_rangehigh", 1000.0),
+                            ai_alarmhh=_data.get("ai_alarmhh", 0),
+                            ai_alarmhh_enable=_data.get("ai_alarmhh_enable", False),
+                            ai_alarmh=_data.get("ai_alarmh", 0),
+                            ai_alarmh_enable=_data.get("ai_alarmh_enable", False),
+                            ai_alarml=_data.get("ai_alarml", 0),
+                            ai_alarml_enable=_data.get("ai_alarml_enable", False),
+                            ai_alarmll=_data.get("ai_alarmll", 0),
+                            ai_alarmll_enable=_data.get("ai_alarmll_enable", False),
+                            di_alarm=_data.get("di_alarm", 1),
+                            di_alarm_enable=_data.get("di_alarm_enable", False),
+                            alarm_staytime=_data.get("alarm_staytime", 0),
+                            alarmreactivatetime=_data.get("alarmreactivatetime", 0),
+                            ignore_setting=_data.get("ignore_setting") if isinstance(_data.get("ignore_setting"), (str, dict)) else None,
+                            ignore_enable=_data.get("ignore_enable", False)
+                        )
+                        output_tags.append(output_tag)
+
+                    except Exception as tag_error:
+                        logger.error(f"[LOAD SCRIPT FAILED] script_id={script_id} - tag={tagname} - {tag_error}")
+                        continue
 
                 custom_script: CustomScript = self.create_custom_tag_obj(
                     script_id=script_id,
@@ -474,10 +525,11 @@ class CustomScriptManager(dict, metaclass=SingletonInstance):
                     input_tagnames=row.input_tagnames,
                     output_tags=output_tags,
                 )
-
                 self.register_calc_tag(custom_script, logging=True)
+
             except Exception as e:
-                logger.error(e)
+                logger.error(f"[LOAD SCRIPT FAILED] script_id={script_id} - {e}")         
+
 
     def create_custom_tag_obj(
         self,
@@ -510,6 +562,19 @@ class CustomScriptManager(dict, metaclass=SingletonInstance):
                     logger.info(f"Updated custom tag ({custom_script.script_id})")
                 else:
                     logger.debug(f"Registerd custom tag ({custom_script.script_id})")
+
+            tag_list = self._fetch_current_values(custom_script)
+            if tag_list:
+                try:
+                    custom_script.update_last_data(tag_list)
+                except Exception:
+                    pass
+                # 큐에서 동일 데이터를 다시 뽑아 뒤섞지 않도록 바로 계산
+                try:
+                    custom_script.calc(custom_script.last_data)
+                    self.cnt_calc += 1
+                except Exception:
+                    pass
         except Exception as e:
             logger.exception(e)
 
@@ -519,6 +584,61 @@ class CustomScriptManager(dict, metaclass=SingletonInstance):
             logger.debug(f"Unregisterd custom tag ({script_id})")
         except KeyError:
             raise CanNotFindTagError(f"Requested tagname is not in {str(self)}")
+        
+    def _fetch_current_values(self, custom_script: CustomScript) -> list[_TagDataFromKafka] | None:
+        """현재 입력 태그의 최신 값을 API에서 조회해서 리스트로 반환한다.
+
+        큐에 쓰지 않으며, 사용할 값이 없으면 ``None``을 돌려준다.
+        """
+        if not custom_script.input_tagnames:
+            return None
+        try:
+            resp = tagvalue_api.get_current_value(
+                tagnames=custom_script.input_tagnames, timeout=10
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    f"Failed to read current values for {custom_script.script_id}: "
+                    f"status {resp.status_code}"
+                )
+                return None
+            payload = resp.json()
+
+            tag_list: list[_TagDataFromKafka] = []
+            for tag in custom_script.input_tagnames:
+                entry = payload.get(tag)
+                if not entry:
+                    entry = {"timestamp": -1, "value": float("nan"), "status_code": -1}
+                ts = entry.get("timestamp", -1)
+                if isinstance(ts, str) and ts.isdigit():
+                    ts = int(ts)
+                try:
+                    ts = int(ts)
+                except Exception:
+                    ts = -1
+                status = entry.get("status_code", -1)
+                if isinstance(status, str) and status.isdigit():
+                    status = int(status)
+                try:
+                    status = int(status)
+                except Exception:
+                    status = -1
+                tag_list.append(
+                    _TagDataFromKafka(
+                        timestamp=ts,
+                        value=entry.get("value", float("nan")),
+                        status_code=status,
+                        tagname=tag,
+                    )
+                )
+            if tag_list:
+                return tag_list
+        except Exception as exc:
+            logger.warning(
+                f"Could not fetch current values for {custom_script.script_id}: {exc}"
+            )
+        return None
+
    
    #script.py
     def _save_custom_tag_input(self, custom_tag: _ScriptInfo) -> dict:
@@ -546,20 +666,23 @@ class CustomScriptManager(dict, metaclass=SingletonInstance):
         fields = [
             "script_id",
             "output_tagname",
-            "display_tagname",
             "output_tag_code",
+            "display_tagname",
+            "description","unit","systemidx","ai_rangelow","ai_rangehigh","ai_alarmhh","ai_alarmhh_enable","ai_alarmh","ai_alarmh_enable","ai_alarml","ai_alarml_enable","ai_alarmll","ai_alarmll_enable","di_alarm","di_alarm_enable","alarm_staytime","ignore_setting","ignore_enable","alarmreactivatetime"
         ]
 
         params_list = []
-        for output_tag in custom_tag.output_tags:
+        for tag in custom_tag.output_tags:
             params_list.append([
                 script_id,
-                output_tag.tagname,
-                output_tag.tagname,
-                output_tag.script,
+                tag.tagname,
+                tag.script,
+                tag.display_tagname,
+                tag.description,tag.unit,tag.systemidx,tag.ai_rangelow,tag.ai_rangehigh,tag.ai_alarmhh,tag.ai_alarmhh_enable,tag.ai_alarmh,tag.ai_alarmh_enable,tag.ai_alarml,tag.ai_alarml_enable,tag.ai_alarmll,tag.ai_alarmll_enable,tag.di_alarm,tag.di_alarm_enable,tag.alarm_staytime,tag.ignore_setting,tag.ignore_enable,tag.alarmreactivatetime
             ])
 
         psql_connector.insert_many(table=table, fields=fields, params_list=params_list)
+
 
     def save_custom_tag(self, custom_tag: _ScriptInfo) -> int:
         try:
@@ -580,7 +703,7 @@ class CustomScriptManager(dict, metaclass=SingletonInstance):
                 names = [row[0] for row in existing]
                 raise ValueError(f"중복된 output_tagname 존재: {names}")
 
-            psql_connector.connection.autocommit = False  # ← 명시적으로 트랜잭션 시작
+            # psql_connector.connection.autocommit = False  # ← 명시적으로 트랜잭션 시작
 
             insert_result_script_input = self._save_custom_tag_input(custom_tag)
             script_id = insert_result_script_input["script_id"]
@@ -621,12 +744,24 @@ class CustomScriptManager(dict, metaclass=SingletonInstance):
                 "script_id", script_id
             )
             psql_connector.delete("calc_tag_setting_output", "script_id", script_id)
-            psql_connector.insert_many(
-                "calc_tag_setting_output",
-                ["script_id", "output_tagname", "display_tagname", "output_tag_code"],
-                [[script_id, t.tagname, t.tagname, t.script] for t in custom_tag.output_tags]
-            )
+            fields = [
+                "script_id",
+                "output_tagname",
+                "output_tag_code",
+                "display_tagname",
+                "description","unit","systemidx","ai_rangelow","ai_rangehigh","ai_alarmhh","ai_alarmhh_enable","ai_alarmh","ai_alarmh_enable","ai_alarml","ai_alarml_enable","ai_alarmll","ai_alarmll_enable","di_alarm","di_alarm_enable","alarm_staytime","ignore_setting","ignore_enable","alarmreactivatetime"
+            ]
+            params_list = []
+            for tag in custom_tag.output_tags:
+                params_list.append([
+                    script_id,
+                    tag.tagname,
+                    tag.script,
+                    tag.display_tagname,
+                    tag.description,tag.unit,tag.systemidx,tag.ai_rangelow,tag.ai_rangehigh,tag.ai_alarmhh,tag.ai_alarmhh_enable,tag.ai_alarmh,tag.ai_alarmh_enable,tag.ai_alarml,tag.ai_alarml_enable,tag.ai_alarmll,tag.ai_alarmll_enable,tag.di_alarm,tag.di_alarm_enable,tag.alarm_staytime,tag.ignore_setting,tag.ignore_enable,tag.alarmreactivatetime
+                ])
 
+            psql_connector.insert_many(table="calc_tag_setting_output", fields=fields, params_list=params_list)
             logger.info(f"Updated script_id={script_id} in database")
         except Exception as e:
             logger.error(f"Failed to update script_id={script_id} in database: {e}")
@@ -639,9 +774,14 @@ class CustomScriptManager(dict, metaclass=SingletonInstance):
 
         # * Update script data from script data queue
         try:
-            script_tag_values = script_tag_value_queue._pop(custom_script.script_id)
-            is_data_updated = custom_script.update_last_data(script_tag_values)
 
+            script_tag_values = script_tag_value_queue._pop(custom_script.script_id)
+            # update_last_data가 False를 반환해도, 큐에서 값을 받은 순간에는
+            # 한 번 계산을 시도하고 싶다. (등록 직후 prefill 상태 등)
+            is_data_updated = custom_script.update_last_data(script_tag_values)
+            if script_tag_values and not is_data_updated:
+                # timestamp가 이전과 같았거나 모두 -1일 때
+                is_data_updated = True
         except (QueueEmpty, KeyError):
             pass
         except Exception as e:
@@ -674,8 +814,15 @@ class CustomScriptManager(dict, metaclass=SingletonInstance):
                         script_result_tag = script_result.data.add()
                         script_result_tag.tagname = tagname
                         script_result_tag.value = script_tag_data["value"]
-                        script_result_tag.timestamp = script_tag_data["timestamp"]
-                        script_result_tag.status_code = script_tag_data["status_code"]
+                        # protobuf requires integers; coerce if needed
+                        try:
+                            script_result_tag.timestamp = int(script_tag_data["timestamp"])
+                        except Exception:
+                            script_result_tag.timestamp = -1
+                        try:
+                            script_result_tag.status_code = int(script_tag_data["status_code"])
+                        except Exception:
+                            script_result_tag.status_code = 0
 
             except Exception as e:
                 logger.error(e)

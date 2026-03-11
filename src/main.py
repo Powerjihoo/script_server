@@ -43,7 +43,7 @@ def run_api_server(host: str = None, port: int = None) -> None:
     ex_api.add_exception_handlers(app)
 
     IS_RUN_APP = True
-    uvicorn.run(
+    uvicorn.run( 
         app,
         host=_host,
         port=_port,
@@ -61,7 +61,7 @@ def collect_kafka_script_values(initial_sleep: int = 5) -> None:
 
     while not STOP_CONSUMER.is_set():
         try:
-            consumer.receive_message()
+            consumer.receive_message()      # 1) 변수에 받기
         except Exception as e:
             logger.error(e)
 
@@ -83,7 +83,8 @@ async def calc_scripts(interval: int = 0.1) -> None:
 
     async def __calc_scripts():
         calc_manager.calc_scripts()
-        if (calc_cnt := calc_manager.cnt_calc) == 0:
+        calc_cnt = calc_manager.cnt_calc
+        if calc_cnt == 0:
             return
         updated_data = calc_manager.create_calc_result_updated_only()
         updated_data_serialized = updated_data.SerializeToString()

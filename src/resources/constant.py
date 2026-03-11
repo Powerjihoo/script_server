@@ -3,7 +3,7 @@ class _CONSTANT(object):
     __slots__ = ()
 
     COMPANY_NAME = "GaonPlatform"
-    PROGRAM_NAME = "CustomCalcServer"
+    PROGRAM_NAME = "ScriptServer"
     API_RESULT_FAIL = "Fail"
     API_RESULT_SUCCESS = "Success"
     STATUSCODE_GOOD = 192

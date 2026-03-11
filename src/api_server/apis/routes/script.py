@@ -42,14 +42,62 @@ async def show():
                 "initialization_code": v.initialization_code,
                 "calculation_code": v.calculation_code,
                 "output_tags": [
-                    dict(_output_tag) for _output_tag in calc_manager[24]._output_tags
+                    dict(_output_tag) for _output_tag in v._output_tags
                 ],
             }
             for k, v in calc_manager.items()
         },
     }
+    return Response(content=orjson.dumps(result), status_code=status.HTTP_200_OK)
+
+@router.get("/script_name", include_in_schema=True)
+async def show_script_names():
+    """
+    전체 커스텀 태그 스크립트의 script_name 목록을 리스트로 반환합니다.
+    Returns:
+        JSON 응답으로 script_name 문자열 리스트 반환
+    """
+    script_summaries = [
+        {"script_id": script_id, "script_name": script.script_name}
+        for script_id, script in calc_manager.items()
+    ]
+
+    result = {
+        "message": "Success",
+        "scripts": script_summaries,
+    }
+
 
     return Response(content=orjson.dumps(result), status_code=status.HTTP_200_OK)
+
+
+@router.get("/script_detail", include_in_schema=True)
+async def get_script_detail(script_name: str):
+    """
+    script_name을 기준으로 input/output 태그와 코드 정보를 반환합니다.
+    Args:
+        script_name (str): 대상 스크립트 이름
+    Returns:
+        JSON 응답으로 스크립트의 상세 정보
+    """
+    # calc_manager에서 script_name으로 검색
+    matched = next(
+        (v for v in calc_manager.values() if v.script_name == script_name), None
+    )
+
+    if matched is None:
+        return Response(content=f"Script name '{script_name}' not found", status_code=404)
+    result = {
+        "message": "Success",
+        "details": {
+            "input_tagnames": matched.input_tagnames,
+            "initialization_code": matched.initialization_code,
+            "calculation_code": matched.calculation_code,
+            "output_tags": [dict(tag) for tag in matched._output_tags],
+        }
+    }
+
+    return Response(content=orjson.dumps(result), status_code=200)
 
 
 @router.get("/{tagname}", include_in_schema=False)

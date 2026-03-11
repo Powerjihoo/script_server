@@ -77,13 +77,7 @@ class LogSettings:
 
 
 class KafkaSettings:
-    def __init__(
-        self,
-        brokers: list,
-        topic_model_values: str,
-        topic_pred_values: str,
-        disable_consumer_group: bool = False,
-    ):
+    def __init__(self,brokers: list,topic_model_values: str,topic_pred_values: str,disable_consumer_group: bool = False,):
         self.brokers = brokers
         self.topic_model_values = topic_model_values
         self.topic_pred_values = topic_pred_values

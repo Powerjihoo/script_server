@@ -1,17 +1,44 @@
 from typing import Any
 
 from pydantic import BaseModel
-
+from typing import Optional, Union
 from custom_calc.models import ScriptInputTagData
 
 from .durations import DataParamsSingleDuration
 
 
 class _ScriptOutputTags(BaseModel):
-    tagname: str
-    script: str
+    # Required
+    tagname: str  
+    script: str   
+    display_tagname: str
+    
+    # Optional
+    description: Optional[str] = None
+    unit: Optional[str] = None
+    systemidx: Optional[int] = None
 
+    ai_rangelow: Optional[float] = -1000.0
+    ai_rangehigh: Optional[float] = 1000.0
 
+    ai_alarmhh: Optional[float] = 0
+    ai_alarmhh_enable: Optional[bool] = False
+    ai_alarmh: Optional[float] = 0
+    ai_alarmh_enable: Optional[bool] = False
+    ai_alarml: Optional[float] = 0
+    ai_alarml_enable: Optional[bool] = False
+    ai_alarmll: Optional[float] = 0
+    ai_alarmll_enable: Optional[bool] = False
+
+    di_alarm: Optional[int] = 1
+    di_alarm_enable: Optional[bool] = False
+
+    alarm_staytime: Optional[int] = 0
+    alarmreactivatetime: Optional[int] = 0
+
+    ignore_setting: Union[str, dict, None] = None
+    ignore_enable: Optional[bool] = False
+    
 class _ScriptInfo(BaseModel):
     script_name: str
     initialization_code: str = None

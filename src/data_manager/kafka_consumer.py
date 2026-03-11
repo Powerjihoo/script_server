@@ -1,16 +1,16 @@
 import time
 
 import orjson
-from google import protobuf
-from kafka import KafkaConsumer
 
 from _protobuf.script_data_pb2 import FromIPCM
 from config import settings
 from dbinfo.tag_value import ScriptTagValueQueue
-from resources.constant import CONST
+from google import protobuf
+from kafka import KafkaConsumer
 from utils.logger import logger, logging_time
-
 from .models import ScriptDataFromKafka
+
+from resources.constant import CONST
 
 script_tag_value_queue = ScriptTagValueQueue()
 
@@ -52,14 +52,14 @@ class StreamDataCollector:
             else None,
             auto_offset_reset="earliest",
             enable_auto_commit=True,
+            max_poll_records=50,
+            session_timeout_ms=15000,
+            heartbeat_interval_ms=3000,
+            max_poll_interval_ms=300000,
+            fetch_min_bytes=1,
+            fetch_max_wait_ms=500,
             consumer_timeout_ms=1000,
-            max_poll_records=1,
-            session_timeout_ms=300000,
-            max_poll_interval_ms=600000,
-            heartbeat_interval_ms=10000,
-            fetch_min_bytes=0,
-            fetch_max_wait_ms=250,
-        )
+)
 
     def receive_message(self) -> None:
         """
